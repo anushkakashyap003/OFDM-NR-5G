@@ -1,0 +1,94 @@
+clc;
+clear;
+close all;
+
+%% ---------------- System Parameters ----------------
+Nfft        = 256;      % FFT size (NR-like)
+Ncp         = 32;       % Cyclic prefix length
+numSymbols  = 1000;     % Number of OFDM symbols
+M           = 16;       % Modulation order (QPSK=4, 16QAM=16, 64QAM=64)
+k           = log2(M);  % Bits per symbol
+
+SNR_dB      = 0:2:30;   % SNR range
+
+%% ---------------- BER Storage ----------------
+BER_AWGN     = zeros(length(SNR_dB),1);
+BER_Rayleigh = zeros(length(SNR_dB),1);
+
+%% ---------------- Main Simulation Loop ----------------
+for snrIdx = 1:length(SNR_dB)
+
+    % ---------------- Transmitter ----------------
+    numBits = Nfft * numSymbols * k;
+    txBits  = randi([0 1], numBits, 1);
+
+    % QAM Modulation
+    txSym = qammod(txBits, M, ...
+                   'InputType','bit', ...
+                   'UnitAveragePower', true);
+
+    % OFDM Symbol Mapping
+    txSymMatrix = reshape(txSym, Nfft, numSymbols);
+
+    % IFFT
+    txOFDM = ifft(txSymMatrix, Nfft);
+
+    % Add Cyclic Prefix
+    txOFDM_CP = [txOFDM(end-Ncp+1:end,:); txOFDM];
+
+    % Serialize
+    txSignal = txOFDM_CP(:);
+
+    %% ---------------- AWGN Channel ----------------
+    rxAWGN = awgn(txSignal, SNR_dB(snrIdx), 'measured');
+
+    %% ---------------- Rayleigh Fading Channel ----------------
+    h = (randn(size(txSignal)) + 1j*randn(size(txSignal))) / sqrt(2);
+    rxRayleigh = h .* txSignal;
+    rxRayleigh = awgn(rxRayleigh, SNR_dB(snrIdx), 'measured');
+
+    %% ---------------- Receiver (AWGN) ----------------
+    rxAWGN = reshape(rxAWGN, Nfft+Ncp, numSymbols);
+    rxAWGN = rxAWGN(Ncp+1:end,:);        % Remove CP
+    rxFFT_AWGN = fft(rxAWGN, Nfft);
+
+    rxSym_AWGN = rxFFT_AWGN(:);
+
+    rxBits_AWGN = qamdemod(rxSym_AWGN, M, ...
+                           'OutputType','bit', ...
+                           'UnitAveragePower', true);
+
+    BER_AWGN(snrIdx) = biterr(txBits, rxBits_AWGN) / numBits;
+
+    %% ---------------- Receiver (Rayleigh) ----------------
+    rxRayleigh = reshape(rxRayleigh, Nfft+Ncp, numSymbols);
+    rxRayleigh = rxRayleigh(Ncp+1:end,:);
+    rxFFT_Rayleigh = fft(rxRayleigh, Nfft);
+
+    % Channel equalization (perfect CSI)
+    hMatrix = reshape(h, Nfft+Ncp, numSymbols);
+    hMatrix = hMatrix(Ncp+1:end,:);
+    H = fft(hMatrix, Nfft);
+
+    rxFFT_Rayleigh = rxFFT_Rayleigh ./ H;
+
+    rxSym_Rayleigh = rxFFT_Rayleigh(:);
+
+    rxBits_Rayleigh = qamdemod(rxSym_Rayleigh, M, ...
+                               'OutputType','bit', ...
+                               'UnitAveragePower', true);
+
+    BER_Rayleigh(snrIdx) = biterr(txBits, rxBits_Rayleigh) / numBits;
+
+end
+
+%% ---------------- Plot BER ----------------
+figure;
+semilogy(SNR_dB, BER_AWGN, 'o-', 'LineWidth', 2);
+hold on;
+semilogy(SNR_dB, BER_Rayleigh, 's-', 'LineWidth', 2);
+grid on;
+xlabel('SNR (dB)');
+ylabel('Bit Error Rate (BER)');
+title('5G NR-based OFDM BER Performance');
+legend('AWGN Channel','Rayleigh Fading Channel');
